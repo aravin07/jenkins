@@ -1,0 +1,105 @@
+version: "3.8"
+
+services:
+  backend:
+    restart: always
+    container_name: django_backend
+    build:
+      context: ./django
+    command: >
+      sh -c "python manage.py migrate &&
+            python manage.py collectstatic --no-input &&
+            gunicorn core.wsgi:application --bind 0.0.0.0:8002"
+    volumes:
+      - ./django:/usr/src/app/
+      - django_static_volume:/usr/src/app/static-files
+      - django_media_volume:/usr/src/app/media
+    # ports:
+    #   - "8002:8002"
+    expose:
+      - 8002
+    env_file:
+      - ./django/.env.prod
+    environment:
+      - SQL_HOST=172.17.0.1
+    depends_on:
+      - redis
+  frontend:
+    restart: always
+    container_name: django_frontend
+    build:
+      context: ./nextjs
+    command: yarn start --host 0.0.0.0
+    # command: python manage.py runserver 0.0.0.0:8002
+    # ports:
+    #   - 8002:8002
+    # env_file:
+    #  - ./nextjs/.env.production
+    environment:
+      NEXT_PUBLIC_BACKEND_API_BASE_URL='http://127.0.0.1:8002/'
+    volumes:
+      - ./nextjs:/usr/src/app/node_modules
+    expose:
+      - 3000
+    depends_on:
+      - backend
+  redis:
+    container_name: redis
+    restart: always
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+  celery:
+    container_name: django_celery
+    restart: always
+    build:
+      context: ./django
+    command: celery -A core worker -l info
+    environment:
+      - DEBUG=1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_BACKEND=redis://redis:6379/0
+    depends_on:
+      - backend
+      - redis
+    volumes:
+      - ./django:/usr/src/app/
+      
+  nginx:
+    container_name: web_server_nginx
+    build: ./nginx
+    volumes:
+      - django_static_volume:/usr/src/app/static-files
+      - django_media_volume:/usr/src/app/media
+    ports:
+      - 80:80
+      - 443:443
+    depends_on:
+      - backend
+  elastic-search:
+    container_name: elastic_search
+    image: elasticsearch:7.14.2
+    environment:
+      - "xpack.security.enabled=false"
+      - "discovery.type=single-node"      
+    networks:
+      - es-net      
+    ports:
+      - "9200:9200" 
+  kibana:
+    container_name: kb-container
+    image: docker.elastic.co/kibana/kibana:7.11.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elastic_search:9200
+    networks:
+      - es-net
+    depends_on:
+      - elastic-search
+    ports:
+      - 5601:5601           
+networks:
+  es-net:
+    driver: bridge
+volumes:
+  django_static_volume:
+  django_media_volume:
